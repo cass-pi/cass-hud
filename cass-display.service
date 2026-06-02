@@ -1,0 +1,17 @@
+[Unit]
+Description=Cass Display Daemon
+After=network.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=ian
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_AUDIODRIVER=dummy
+ExecStartPre=/bin/sh -c 'systemctl stop getty@tty1.service || true'
+ExecStart=/usr/bin/python3 /home/ian/Projects/cass-hud/cass-display.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

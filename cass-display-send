@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""
+cass-display-send — push a message/command to the Cass display daemon.
+
+Usage:
+  cass-display-send message "Running tests..." [--level info|ok|warn|error|dim]
+  cass-display-send status "busy"
+  cass-display-send clear
+  cass-display-send ping
+"""
+
+import sys
+import json
+import socket
+
+SOCKET_PATH = "/tmp/cass-display.sock"
+
+def send(payload):
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(SOCKET_PATH)
+        s.sendall((json.dumps(payload) + "\n").encode())
+        resp = s.recv(4096)
+        s.close()
+        print(resp.decode().strip())
+    except FileNotFoundError:
+        print("error: display daemon not running (socket not found)", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = args[0]
+
+    if cmd == "message":
+        text = args[1] if len(args) > 1 else ""
+        level = "info"
+        if "--level" in args:
+            idx = args.index("--level")
+            level = args[idx + 1] if idx + 1 < len(args) else "info"
+        send({"cmd": "message", "text": text, "level": level})
+
+    elif cmd == "status":
+        text = args[1] if len(args) > 1 else "idle"
+        send({"cmd": "status", "text": text})
+
+    elif cmd == "clear":
+        send({"cmd": "clear"})
+
+    elif cmd == "ping":
+        send({"cmd": "ping"})
+
+    else:
+        print(f"unknown command: {cmd}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
