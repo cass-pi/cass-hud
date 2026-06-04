@@ -40,10 +40,11 @@ LEVEL_COLORS = {
 }
 
 # ── State ─────────────────────────────────────────────────────────────────────
-_lock     = threading.Lock()
-_messages = []
-_status   = "ONLINE"
-_flicker  = 1.0
+_lock      = threading.Lock()
+_messages  = []
+_status    = "ONLINE"
+_flicker   = 1.0
+_k3s_nodes = []   # list of dicts: name, role, status, mem_pct, cpu_pct
 
 def push_message(text, level="info"):
     with _lock:
@@ -59,6 +60,11 @@ def set_status(text):
 def clear_messages():
     with _lock:
         _messages.clear()
+
+def set_k3s_nodes(nodes):
+    global _k3s_nodes
+    with _lock:
+        _k3s_nodes = nodes
 
 # ── Socket ────────────────────────────────────────────────────────────────────
 def handle_client(conn):
@@ -88,6 +94,12 @@ def handle_client(conn):
                     conn.sendall(b'{"ok":true}\n')
                 elif c == "clear":
                     clear_messages()
+                    conn.sendall(b'{"ok":true}\n')
+                elif c == "k3s":
+                    set_k3s_nodes(cmd.get("nodes", []))
+                    conn.sendall(b'{"ok":true}\n')
+                elif c == "k3s_error":
+                    push_message(f"K3S ERR: {cmd.get('text','?')[:60]}", "error")
                     conn.sendall(b'{"ok":true}\n')
                 elif c == "ping":
                     conn.sendall(b'"pong"\n')
@@ -164,6 +176,162 @@ def draw_border(surface, w, h, t):
         pygame.draw.line(surface, PHOSPHOR_DIM, (cx, cy), (cx + sx*size, cy), thick)
         pygame.draw.line(surface, PHOSPHOR_DIM, (cx, cy), (cx, cy + sy*size), thick)
 
+# ── Hexagon helpers ──────────────────────────────────────────────────────────
+
+def hex_points(cx, cy, r):
+    """Return the 6 vertices of a flat-top hexagon."""
+    pts = []
+    for i in range(6):
+        angle = math.radians(60 * i)  # flat-top: 0° = right
+        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    return pts
+
+
+def draw_hex_filled(surface, cx, cy, r, fill_pct, fill_color, outline_color, t, pulse=False):
+    """
+    Draw a hexagon with a vertical fill from the bottom (fill_pct 0-100).
+    Optionally pulse the outline.
+    """
+    pts = hex_points(cx, cy, r)
+
+    # Bounding box for clipping the fill
+    min_y = min(p[1] for p in pts)
+    max_y = max(p[1] for p in pts)
+    fill_height = (max_y - min_y) * (fill_pct / 100)
+    clip_top = max_y - fill_height
+
+    # Draw fill using a clipped surface
+    hex_surf = pygame.Surface((r*2+4, r*2+4), pygame.SRCALPHA)
+    local_pts = [(p[0]-cx+r+2, p[1]-cy+r+2) for p in pts]
+    pygame.draw.polygon(hex_surf, (*fill_color, 180), local_pts)
+
+    # Mask: clear everything above clip_top
+    clip_local = clip_top - cy + r + 2
+    if clip_local > 0:
+        pygame.draw.rect(hex_surf, (0,0,0,0), (0, 0, r*2+4, int(clip_local)))
+
+    surface.blit(hex_surf, (cx-r-2, cy-r-2))
+
+    # Outline (with optional pulse)
+    bright = 0.6 + 0.4 * math.sin(t * 3) if pulse else 0.8
+    oc = tuple(int(c * bright) for c in outline_color)
+    pygame.draw.polygon(surface, oc, [(int(x), int(y)) for x,y in pts], 2)
+
+
+def fill_color_for_pct(pct, notready=False):
+    """Green → amber → red gradient based on fill percent, full red if notready."""
+    if notready:
+        return RED_P
+    if pct < 60:
+        return PHOSPHOR
+    elif pct < 80:
+        return AMBER
+    else:
+        return RED_P
+
+
+def draw_k3s_panel(surface, fonts, t, panel_x, panel_y, panel_w, panel_h, nodes):
+    """Render the k3s node health panel on the right side."""
+    fn_small = fonts["small"]
+    fn_tiny  = fonts.get("tiny", fonts["small"])
+
+    # Panel background + border
+    pygame.draw.rect(surface, DARK_GREEN, (panel_x, panel_y, panel_w, panel_h))
+    pygame.draw.rect(surface, PHOSPHOR_DIM, (panel_x, panel_y, panel_w, panel_h), 1)
+
+    # Panel title
+    title = "K3S NODES"
+    tw = fn_small.size(title)[0]
+    draw_phosphor_text(surface, fn_small, title,
+                       panel_x + (panel_w - tw)//2, panel_y + 4, PHOSPHOR_HI, glow=False)
+    pygame.draw.line(surface, PHOSPHOR_DIM,
+                     (panel_x+4, panel_y+26), (panel_x+panel_w-4, panel_y+26), 1)
+
+    if not nodes:
+        msg = "NO DATA"
+        mw = fn_small.size(msg)[0]
+        draw_phosphor_text(surface, fn_small, msg,
+                           panel_x + (panel_w-mw)//2,
+                           panel_y + panel_h//2 - 10,
+                           PHOSPHOR_DIM, glow=False)
+        return
+
+    # Layout: stack nodes vertically
+    usable_h = panel_h - 32
+    slot_h = usable_h // max(len(nodes), 1)
+    hex_r = min(18, (slot_h - 28) // 2, (panel_w // 3 - 8) // 2)
+
+    for i, node in enumerate(nodes):
+        slot_y = panel_y + 32 + i * slot_h
+        notready = node["status"] != "ready"
+        unknown  = node["status"] == "unknown"
+
+        # Node name + role tag
+        role_tag = "SRV" if node["role"] == "server" else "WRK"
+        name_color = RED_P if notready else PHOSPHOR
+        label = f"{node['name']}"
+        lw = fn_tiny.size(label)[0]
+        draw_phosphor_text(surface, fn_tiny, label,
+                           panel_x + (panel_w - lw)//2, slot_y + 2,
+                           name_color, glow=notready)
+
+        role_color = PHOSPHOR_DIM
+        rw = fn_tiny.size(role_tag)[0]
+        draw_phosphor_text(surface, fn_tiny, role_tag,
+                           panel_x + (panel_w - rw)//2, slot_y + 2 + fn_tiny.get_height(),
+                           role_color, glow=False)
+
+        label_top = slot_y + 2 + fn_tiny.get_height() * 2 + 2
+        # Three hexagons: status | mem | cpu
+        spacing = panel_w // 3
+        centers = [
+            panel_x + spacing // 2,
+            panel_x + spacing + spacing // 2,
+            panel_x + 2 * spacing + spacing // 2,
+        ]
+
+        # Status hex — fill 100% if ready, 0% if not; pulse if notready
+        status_fill = 0 if notready else 100
+        status_outline = RED_P if notready else PHOSPHOR
+        status_fc = RED_P if notready else PHOSPHOR
+        draw_hex_filled(surface, centers[0], label_top + hex_r + 2, hex_r,
+                        status_fill, status_fc, status_outline, t, pulse=notready)
+
+        # Mem hex
+        mem_pct = node.get("mem_pct", 0)
+        mem_fc  = fill_color_for_pct(mem_pct, notready)
+        draw_hex_filled(surface, centers[1], label_top + hex_r + 2, hex_r,
+                        mem_pct, mem_fc, mem_fc, t)
+
+        # CPU hex
+        cpu_pct = node.get("cpu_pct", 0)
+        cpu_fc  = fill_color_for_pct(cpu_pct, notready)
+        draw_hex_filled(surface, centers[2], label_top + hex_r + 2, hex_r,
+                        cpu_pct, cpu_fc, cpu_fc, t)
+
+        # Sub-labels
+        for label_txt, cx in zip(["ST", "MEM", "CPU"], centers):
+            ltw = fn_tiny.size(label_txt)[0]
+            draw_phosphor_text(surface, fn_tiny, label_txt,
+                               cx - ltw//2, label_top + hex_r*2 + 6,
+                               PHOSPHOR_DIM, glow=False)
+
+        # Percent readout under mem/cpu
+        for pct, cx in [(mem_pct, centers[1]), (cpu_pct, centers[2])]:
+            pct_txt = f"{pct}%"
+            ptw = fn_tiny.size(pct_txt)[0]
+            draw_phosphor_text(surface, fn_tiny, pct_txt,
+                               cx - ptw//2,
+                               label_top + hex_r*2 + 6 + fn_tiny.get_height(),
+                               PHOSPHOR_DIM, glow=False)
+
+        # Divider between nodes
+        if i < len(nodes) - 1:
+            dy = slot_y + slot_h - 2
+            pygame.draw.line(surface, DARK_GREEN,
+                             (panel_x+4, dy), (panel_x+panel_w-4, dy), 1)
+
+
 def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
     global _flicker
 
@@ -189,6 +357,11 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
     with _lock:
         status_text = _status
         msgs = list(_messages)
+        k3s_nodes = list(_k3s_nodes)
+
+    # Panel layout: right 1/3 for k3s, left 2/3 for log
+    PANEL_W = W // 3
+    LOG_W   = W - PANEL_W
 
     # ── Header ───────────────────────────────────────────────────────────────
     header_h = 52
@@ -225,7 +398,7 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
 
     if not msgs:
         draw_phosphor_text(canvas, fn_small, "-- NO MESSAGES --",
-                           W//2 - fn_small.size("-- NO MESSAGES --")[0]//2,
+                           LOG_W//2 - fn_small.size("-- NO MESSAGES --")[0]//2,
                            H//2 - 10, PHOSPHOR_DIM, glow=False)
     else:
         for i, msg in enumerate(reversed(msgs)):
@@ -246,8 +419,17 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
             tag = f"{msg['level'].upper():<5}"
             draw_phosphor_text(canvas, fn_small, tag, 90, y, faded, glow=False)
 
-            # Message
+            # Message (clipped to log column width)
             draw_phosphor_text(canvas, fn_small, msg["text"], 160, y, faded, glow=(age < 5))
+
+    # Vertical divider between log and k3s panel
+    pygame.draw.line(canvas, PHOSPHOR_DIM, (LOG_W, header_h), (LOG_W, H-30), 1)
+
+    # ── K3S panel ────────────────────────────────────────────────────────────
+    draw_k3s_panel(canvas, fonts, t,
+                   LOG_W + 1, header_h,
+                   PANEL_W - 1, H - header_h - 30,
+                   k3s_nodes)
 
     # ── Footer ───────────────────────────────────────────────────────────────
     pygame.draw.line(canvas, PHOSPHOR_DIM, (0, H-30), (W, H-30), 1)
@@ -283,6 +465,7 @@ def main():
         "large":  pygame.font.Font(FONT_PATH, 36),
         "medium": pygame.font.Font(FONT_PATH, 28),
         "small":  pygame.font.Font(FONT_PATH, 20),
+        "tiny":   pygame.font.Font(FONT_PATH, 14),
     }
 
     threading.Thread(target=socket_server, daemon=True).start()

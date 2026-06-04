@@ -1,0 +1,56 @@
+---
+# Cass HUD — read-only service account for k3s node health monitoring
+# Apply with: kubectl apply -f k3s-rbac.yaml
+# Then extract the token: kubectl -n cass-hud get secret cass-hud-token -o jsonpath='{.data.token}' | base64 -d
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cass-hud
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cass-hud
+  namespace: cass-hud
+
+---
+# Long-lived token secret (k8s 1.24+)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cass-hud-token
+  namespace: cass-hud
+  annotations:
+    kubernetes.io/service-account.name: cass-hud
+type: kubernetes.io/service-account-token
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cass-hud-node-reader
+rules:
+  # Node status and conditions (Ready/NotReady)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  # metrics-server: CPU and memory usage per node
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cass-hud-node-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cass-hud-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: cass-hud
+    namespace: cass-hud

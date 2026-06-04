@@ -1,0 +1,10 @@
+[Unit]
+Description=Cass HUD — k3s Node Health Poller
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ian
+ExecStart=/usr/bin/python3 /home/ian/Projects/cass-hud/k3s-poller.py
+StandardOutput=journal
+StandardError=journal

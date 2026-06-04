@@ -1,0 +1,10 @@
+[Unit]
+Description=Cass HUD — k3s poller timer (every 30s)
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=30
+Unit=k3s-poller.service
+
+[Install]
+WantedBy=timers.target
