@@ -29,7 +29,6 @@ PHOSPHOR_HI = (180, 255, 180)     # bright highlights
 AMBER       = (255, 176, 0)       # amber accent for warnings
 RED_P       = (255, 60, 60)
 DARK_GREEN  = (0, 40, 10)
-SCANLINE    = (0, 0, 0)
 
 LEVEL_COLORS = {
     "info":  PHOSPHOR,
@@ -162,20 +161,6 @@ def draw_orb(surface, cx, cy, t, status):
     if core_r > 2:
         pygame.draw.circle(surface, PHOSPHOR_HI, (cx, cy), max(1, core_r-3))
 
-def draw_border(surface, w, h, t):
-    """Rounded CRT bezel-style border."""
-    flicker_alpha = int(180 + 40 * math.sin(t * 0.7))
-    color = (*PHOSPHOR_DIM, flicker_alpha)
-    # Corner brackets
-    size = 16
-    thick = 2
-    corners = [(0,0),(w,0),(0,h),(w,h)]
-    for cx, cy in corners:
-        sx = 1 if cx == 0 else -1
-        sy = 1 if cy == 0 else -1
-        pygame.draw.line(surface, PHOSPHOR_DIM, (cx, cy), (cx + sx*size, cy), thick)
-        pygame.draw.line(surface, PHOSPHOR_DIM, (cx, cy), (cx, cy + sy*size), thick)
-
 # ── Hexagon helpers ──────────────────────────────────────────────────────────
 
 def hex_points(cx, cy, r):
@@ -240,7 +225,7 @@ def draw_k3s_panel(surface, fonts, t, panel_x, panel_y, panel_w, panel_h, nodes)
     pygame.draw.rect(surface, PHOSPHOR_DIM, (panel_x, panel_y, panel_w, panel_h), 1)
 
     # Panel title
-    title = "K3S NODES"
+    title = "STRONKBEAR"
     tw = fn_small.size(title)[0]
     draw_phosphor_text(surface, fn_small, title,
                        panel_x + (panel_w - tw)//2, panel_y + 4, PHOSPHOR_HI, glow=False)
@@ -257,79 +242,69 @@ def draw_k3s_panel(surface, fonts, t, panel_x, panel_y, panel_w, panel_h, nodes)
         return
 
     # Layout: stack nodes vertically
-    usable_h = panel_h - 32
+    PAD = 8  # inner padding
+
+    # Hex column positions — shift left by giving them less right margin
+    _rep_r = 14
+    _hex_gap = PAD
+    _hex1_cx = panel_x + panel_w * 7 // 8 - _rep_r
+    _hex2_cx = _hex1_cx + _rep_r * 2 + _hex_gap
+
+    # Column headers: NAME left, MEM/CPU above their hex columns
+    header_label_y = panel_y + 28
+    draw_phosphor_text(surface, fn_tiny, "NAME",
+                       panel_x + PAD, header_label_y, PHOSPHOR_DIM, glow=False)
+    for txt, cx in [("MEM", _hex1_cx), ("CPU", _hex2_cx)]:
+        tw = fn_tiny.size(txt)[0]
+        draw_phosphor_text(surface, fn_tiny, txt,
+                           cx - tw // 2, header_label_y, PHOSPHOR_DIM, glow=False)
+    pygame.draw.line(surface, PHOSPHOR_DIM,
+                     (panel_x + PAD, panel_y + 28 + fn_tiny.get_height() + 2),
+                     (panel_x + panel_w - PAD, panel_y + 28 + fn_tiny.get_height() + 2), 1)
+
+    usable_top = panel_y + 28 + fn_tiny.get_height() + 6
+    usable_h = panel_y + panel_h - usable_top
     slot_h = usable_h // max(len(nodes), 1)
-    hex_r = min(18, (slot_h - 28) // 2, (panel_w // 3 - 8) // 2)
 
     for i, node in enumerate(nodes):
-        slot_y = panel_y + 32 + i * slot_h
+        slot_y = usable_top + i * slot_h
         notready = node["status"] != "ready"
-        unknown  = node["status"] == "unknown"
 
-        # Node name + role tag
-        role_tag = "SRV" if node["role"] == "server" else "WRK"
+        hex_r = min(14, (slot_h - PAD * 2) // 2)
+        hex1_cx = panel_x + panel_w * 7 // 8 - hex_r
+        hex2_cx = hex1_cx + hex_r * 2 + _hex_gap
+        hex_cy  = slot_y + slot_h // 2
+
+        # Node name on the left
         name_color = RED_P if notready else PHOSPHOR
-        label = f"{node['name']}"
+        label = node["name"]
         lw = fn_tiny.size(label)[0]
-        draw_phosphor_text(surface, fn_tiny, label,
-                           panel_x + (panel_w - lw)//2, slot_y + 2,
+        name_x = panel_x + PAD
+        name_y = hex_cy - fn_tiny.get_height() // 2
+        max_name_w = hex1_cx - name_x - PAD
+        while lw > max_name_w and len(label) > 4:
+            label = label[:-1]
+            lw = fn_tiny.size(label)[0]
+        draw_phosphor_text(surface, fn_tiny, label, name_x, name_y,
                            name_color, glow=notready)
 
-        role_color = PHOSPHOR_DIM
-        rw = fn_tiny.size(role_tag)[0]
-        draw_phosphor_text(surface, fn_tiny, role_tag,
-                           panel_x + (panel_w - rw)//2, slot_y + 2 + fn_tiny.get_height(),
-                           role_color, glow=False)
-
-        label_top = slot_y + 2 + fn_tiny.get_height() * 2 + 2
-        # Three hexagons: status | mem | cpu
-        spacing = panel_w // 3
-        centers = [
-            panel_x + spacing // 2,
-            panel_x + spacing + spacing // 2,
-            panel_x + 2 * spacing + spacing // 2,
-        ]
-
-        # Status hex — fill 100% if ready, 0% if not; pulse if notready
-        status_fill = 0 if notready else 100
-        status_outline = RED_P if notready else PHOSPHOR
-        status_fc = RED_P if notready else PHOSPHOR
-        draw_hex_filled(surface, centers[0], label_top + hex_r + 2, hex_r,
-                        status_fill, status_fc, status_outline, t, pulse=notready)
-
-        # Mem hex
+        # MEM hex
         mem_pct = node.get("mem_pct", 0)
         mem_fc  = fill_color_for_pct(mem_pct, notready)
-        draw_hex_filled(surface, centers[1], label_top + hex_r + 2, hex_r,
+        draw_hex_filled(surface, hex1_cx, hex_cy, hex_r,
                         mem_pct, mem_fc, mem_fc, t)
 
         # CPU hex
         cpu_pct = node.get("cpu_pct", 0)
         cpu_fc  = fill_color_for_pct(cpu_pct, notready)
-        draw_hex_filled(surface, centers[2], label_top + hex_r + 2, hex_r,
+        draw_hex_filled(surface, hex2_cx, hex_cy, hex_r,
                         cpu_pct, cpu_fc, cpu_fc, t)
-
-        # Sub-labels
-        for label_txt, cx in zip(["ST", "MEM", "CPU"], centers):
-            ltw = fn_tiny.size(label_txt)[0]
-            draw_phosphor_text(surface, fn_tiny, label_txt,
-                               cx - ltw//2, label_top + hex_r*2 + 6,
-                               PHOSPHOR_DIM, glow=False)
-
-        # Percent readout under mem/cpu
-        for pct, cx in [(mem_pct, centers[1]), (cpu_pct, centers[2])]:
-            pct_txt = f"{pct}%"
-            ptw = fn_tiny.size(pct_txt)[0]
-            draw_phosphor_text(surface, fn_tiny, pct_txt,
-                               cx - ptw//2,
-                               label_top + hex_r*2 + 6 + fn_tiny.get_height(),
-                               PHOSPHOR_DIM, glow=False)
 
         # Divider between nodes
         if i < len(nodes) - 1:
-            dy = slot_y + slot_h - 2
-            pygame.draw.line(surface, DARK_GREEN,
-                             (panel_x+4, dy), (panel_x+panel_w-4, dy), 1)
+            dy = slot_y + slot_h - 1
+            pygame.draw.line(surface, PHOSPHOR_DIM,
+                             (panel_x + PAD, dy), (panel_x + panel_w - PAD, dy), 1)
 
 
 def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
