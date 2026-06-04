@@ -112,17 +112,22 @@ def parse_quantity(q):
     """Convert k8s resource quantity string to a plain number (bytes or millicores)."""
     if q is None:
         return 0
-    q = str(q)
-    # Memory suffixes
-    suffixes = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
-                "K": 1000, "M": 1000**2, "G": 1000**3, "T": 1000**4}
-    for suffix, mult in suffixes.items():
+    q = str(q).strip()
+    # Memory suffixes (longest first to avoid prefix matches)
+    suffixes = [("Ki", 1024), ("Mi", 1024**2), ("Gi", 1024**3), ("Ti", 1024**4),
+                ("K", 1000), ("M", 1000**2), ("G", 1000**3), ("T", 1000**4)]
+    for suffix, mult in suffixes:
         if q.endswith(suffix):
             return int(q[:-len(suffix)]) * mult
-    # CPU: "250m" = 250 millicores, "2" = 2000 millicores
-    if q.endswith("m"):
+    # CPU suffixes
+    if q.endswith("n"):       # nanocores → millicores
+        return int(q[:-1]) // 1_000_000
+    if q.endswith("u"):       # microcores → millicores
+        return int(q[:-1]) // 1_000
+    if q.endswith("m"):       # millicores
         return int(q[:-1])
-    return int(q) * 1000  # whole cores → millicores
+    # Plain integer: whole cores → millicores, or whole bytes
+    return int(q) * 1000
 
 
 def collect_nodes(api_server, token):
