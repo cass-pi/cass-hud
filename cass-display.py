@@ -29,6 +29,7 @@ PHOSPHOR_HI = (180, 255, 180)     # bright highlights
 AMBER       = (255, 176, 0)       # amber accent for warnings
 RED_P       = (255, 60, 60)
 DARK_GREEN  = (0, 40, 10)
+STALE_GREY  = (80, 80, 80)        # greyed-out colour for stale metrics
 
 LEVEL_COLORS = {
     "info":  PHOSPHOR,
@@ -269,6 +270,7 @@ def draw_k3s_panel(surface, fonts, t, panel_x, panel_y, panel_w, panel_h, nodes)
     for i, node in enumerate(nodes):
         slot_y = usable_top + i * slot_h
         notready = node["status"] != "ready"
+        stale    = node.get("stale", False)
 
         hex_r = min(14, (slot_h - PAD * 2) // 2)
         hex1_cx = panel_x + panel_w * 7 // 8 - hex_r
@@ -276,7 +278,7 @@ def draw_k3s_panel(surface, fonts, t, panel_x, panel_y, panel_w, panel_h, nodes)
         hex_cy  = slot_y + slot_h // 2
 
         # Node name on the left
-        name_color = RED_P if notready else PHOSPHOR
+        name_color = STALE_GREY if stale else (RED_P if notready else PHOSPHOR)
         label = node["name"]
         lw = fn_tiny.size(label)[0]
         name_x = panel_x + PAD
@@ -290,15 +292,15 @@ def draw_k3s_panel(surface, fonts, t, panel_x, panel_y, panel_w, panel_h, nodes)
 
         # MEM hex
         mem_pct = node.get("mem_pct", 0)
-        mem_fc  = fill_color_for_pct(mem_pct, notready)
+        mem_fc  = STALE_GREY if stale else fill_color_for_pct(mem_pct, notready)
         draw_hex_filled(surface, hex1_cx, hex_cy, hex_r,
-                        mem_pct, mem_fc, mem_fc, t)
+                        0 if stale else mem_pct, mem_fc, mem_fc, t)
 
         # CPU hex
         cpu_pct = node.get("cpu_pct", 0)
-        cpu_fc  = fill_color_for_pct(cpu_pct, notready)
+        cpu_fc  = STALE_GREY if stale else fill_color_for_pct(cpu_pct, notready)
         draw_hex_filled(surface, hex2_cx, hex_cy, hex_r,
-                        cpu_pct, cpu_fc, cpu_fc, t)
+                        0 if stale else cpu_pct, cpu_fc, cpu_fc, t)
 
         # Divider between nodes
         if i < len(nodes) - 1:

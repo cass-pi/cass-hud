@@ -135,13 +135,15 @@ def collect_nodes(api_server, token):
 
     # Try metrics; gracefully degrade if metrics-server not available
     metrics_by_name = {}
+    metrics_stale = False
     try:
         metrics_raw = k8s_get(api_server, token, "/apis/metrics.k8s.io/v1beta1/nodes")
         for item in metrics_raw.get("items", []):
             name = item["metadata"]["name"]
             metrics_by_name[name] = item["usage"]
     except Exception as e:
-        print(f"WARN: metrics-server unavailable ({e}); CPU/mem will show 0", file=sys.stderr)
+        print(f"WARN: metrics-server unavailable ({e}); marking nodes as stale", file=sys.stderr)
+        metrics_stale = True
 
     nodes = []
     for item in nodes_raw.get("items", []):
@@ -175,6 +177,9 @@ def collect_nodes(api_server, token):
         mem_pct = round((used_mem / alloc_mem * 100) if alloc_mem else 0)
         cpu_pct = round((used_cpu / alloc_cpu * 100) if alloc_cpu else 0)
 
+        # Per-node stale flag: metrics fetch failed entirely, or this node is missing
+        node_stale = metrics_stale or (name not in metrics_by_name and not metrics_stale)
+
         # Shorten name for display (strip domain suffix if present)
         short_name = name.split(".")[0].upper()
 
@@ -184,6 +189,7 @@ def collect_nodes(api_server, token):
             "status":  status,
             "mem_pct": mem_pct,
             "cpu_pct": cpu_pct,
+            "stale":   node_stale,
         })
 
     # Sort: servers first, then workers
