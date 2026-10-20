@@ -5,6 +5,8 @@ cass-display-send — push a message/command to the Cass display daemon.
 Usage:
   cass-display-send message "Running tests..." [--level info|ok|warn|error|dim]
   cass-display-send status "busy"
+  cass-display-send busy start ["Reading issue #7..."]
+  cass-display-send busy stop
   cass-display-send clear
   cass-display-send ping
 """
@@ -49,6 +51,12 @@ def main():
     elif cmd == "status":
         text = args[1] if len(args) > 1 else "idle"
         send({"cmd": "status", "text": text})
+
+    elif cmd == "busy":
+        sub = args[1] if len(args) > 1 else "start"
+        text = args[2] if len(args) > 2 else ""
+        active = sub != "stop"
+        send({"cmd": "busy", "active": active, "text": text})
 
     elif cmd == "clear":
         send({"cmd": "clear"})
