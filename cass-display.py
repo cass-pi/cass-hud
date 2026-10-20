@@ -49,12 +49,20 @@ _flicker   = 1.0
 _k3s_nodes = []   # list of dicts: name, role, status, mem_pct, cpu_pct
 _busy      = False
 _busy_text = ""
+_last_activity = time.time()
+
+IDLE_SLEEP_AFTER_S = 5 * 60  # drift into the sleeping look after 5 minutes of no activity
+
+def _touch_activity():
+    global _last_activity
+    _last_activity = time.time()
 
 def push_message(text, level="info"):
     with _lock:
         _messages.append({"text": text, "level": level, "ts": time.time()})
         if len(_messages) > MAX_MESSAGES:
             _messages.pop(0)
+    _touch_activity()
 
 def set_status(text):
     global _status
@@ -66,6 +74,7 @@ def set_busy(active, text=""):
     with _lock:
         _busy = active
         _busy_text = text
+    _touch_activity()
 
 def clear_messages():
     with _lock:
@@ -172,14 +181,18 @@ def _face_blinking(t):
     return _blink_until > 0.0
 
 
-def draw_face(surface, t, cx, cy, scale, msgs, busy=False):
+def draw_face(surface, t, cx, cy, scale, msgs, busy=False, idle_s=0.0):
     """
     Minimal neon-mint robot face (replaces the scrolling message log).
     Mood colour and a brief 'talking' mouth animation reflect the most
     recent pushed message; otherwise idle with a slow blink. When busy,
     a steady cyan 'thinking' colour overrides mood/idle entirely so
     working time is visually unmistakable regardless of message state.
+    After a long stretch with no activity at all, the face drifts into
+    a sleeping look (closed eyes, slow breathing, drifting Zzz) instead
+    of continuing to blink and stare.
     """
+    sleeping = (not busy) and idle_s >= IDLE_SLEEP_AFTER_S
     mood_color = PHOSPHOR_HI
     talking = False
     if msgs:
@@ -193,6 +206,8 @@ def draw_face(surface, t, cx, cy, scale, msgs, busy=False):
 
     if busy:
         mood_color = THINKING_C
+    elif sleeping:
+        mood_color = tuple(int(c * 0.5) for c in PHOSPHOR_DIM)
 
     plate_w, plate_h = int(160 * scale), int(158 * scale)
     plate_x, plate_y = cx - plate_w // 2, cy - plate_h // 2
@@ -230,21 +245,33 @@ def draw_face(surface, t, cx, cy, scale, msgs, busy=False):
 
     eye_w, eye_h = int(31 * scale), int(32 * scale)
     eye_y = cy - int(22 * scale)
-    if blinking:
+    if sleeping:
+        # slow, heavy-lidded closed eyes instead of a blink
+        shut_h = max(2, int(eye_h * 0.1))
+        eye_y += (eye_h - shut_h)
+        eye_h = shut_h
+    elif blinking:
         shut_h = max(2, int(eye_h * 0.12))
         eye_y += (eye_h - shut_h)
         eye_h = shut_h
 
     eye_color = mood_color if talking else PHOSPHOR_HI
+    if sleeping:
+        eye_color = mood_color
     for ex in (cx - int(40 * scale), cx + int(9 * scale)):
         pygame.draw.rect(surface, eye_color, (ex, eye_y, eye_w, eye_h), border_radius=max(1, int(scale)))
 
-    # Mouth — flat idle line, talking wobble, or steady 'thinking' dash row
+    # Mouth — flat idle line, talking wobble, steady 'thinking' dash row,
+    # or a slow breathing curve while asleep
     mouth_y  = cy + int(23 * scale)
     mouth_w  = int(30 * scale)
     mx1, mx2 = cx - mouth_w // 2, cx + mouth_w // 2
     mouth_th = max(2, int(5 * scale))
-    if busy:
+    if sleeping:
+        breathe = int(2 * scale * math.sin(t * 0.8))
+        idle_color = tuple(int(c * 0.5) for c in mood_color)
+        pygame.draw.line(surface, idle_color, (mx1, mouth_y + breathe), (mx2, mouth_y + breathe), mouth_th)
+    elif busy:
         # three small dots that chase left-to-right — reads as 'processing'
         dot_r = max(1, int(3 * scale))
         gap   = mouth_w // 3
@@ -261,6 +288,26 @@ def draw_face(surface, t, cx, cy, scale, msgs, busy=False):
     else:
         idle_color = tuple(int(c * 0.55) for c in mood_color)
         pygame.draw.line(surface, idle_color, (mx1, mouth_y), (mx2, mouth_y), mouth_th)
+
+    # Drifting "Zzz" while asleep, rising from the top-right of the faceplate
+    if sleeping:
+        z_cycle = 4.0
+        z_phase = (t % z_cycle) / z_cycle
+        z_color = tuple(int(c * 0.8) for c in mood_color)
+        for i, size_mul in enumerate((1.0, 0.75, 0.55)):
+            local_phase = (z_phase + i * 0.18) % 1.0
+            zx = plate_x + plate_w - int(10 * scale) + int(i * 10 * scale)
+            zy = plate_y - int(4 * scale) - int(local_phase * 26 * scale)
+            alpha = max(0, 1.0 - local_phase)
+            if alpha <= 0.02:
+                continue
+            zfont_h = max(8, int(13 * scale * size_mul))
+            z_surf_color = tuple(int(c * alpha) for c in z_color)
+            # lightweight hand-drawn Z using three line segments
+            zs = zfont_h
+            pygame.draw.line(surface, z_surf_color, (zx, zy), (zx + zs, zy), max(1, int(2 * scale)))
+            pygame.draw.line(surface, z_surf_color, (zx + zs, zy), (zx, zy + zs), max(1, int(2 * scale)))
+            pygame.draw.line(surface, z_surf_color, (zx, zy + zs), (zx + zs, zy + zs), max(1, int(2 * scale)))
 
 
 def draw_orb(surface, cx, cy, t, status):
@@ -458,6 +505,7 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
         k3s_nodes = list(_k3s_nodes)
         busy_now  = _busy
         busy_txt  = _busy_text
+        idle_s    = time.time() - _last_activity
 
     # Panel layout: right 1/3 for k3s, left 2/3 for log
     PANEL_W = W // 3
@@ -499,7 +547,7 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
     face_scale = min(LOG_W, log_h) / 230.0
     face_cx = LOG_W // 2
     face_cy = log_y + int(log_h * 0.42)
-    draw_face(canvas, t, face_cx, face_cy, face_scale, msgs, busy=busy_now)
+    draw_face(canvas, t, face_cx, face_cy, face_scale, msgs, busy=busy_now, idle_s=idle_s)
 
     # One-line caption: busy text takes priority, else the latest message
     cap_y = face_cy + int(100 * face_scale) + 18
