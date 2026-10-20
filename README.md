@@ -8,8 +8,8 @@ Renders to a connected HDMI display (tested on a portrait 480×1280 screen) with
 
 - Phosphor green CRT aesthetic with scan line overlay and subtle flicker
 - Live clock and date
-- Scrolling message log with levels: `info`, `ok`, `warn`, `error`, `dim`
-- Messages fade over time
+- Animated face — idle blink cycle, mood colour and a brief talking-mouth animation driven by the most recent message (`info`, `ok`, `warn`, `error`, `dim`), with a one-line caption underneath
+- Busy/working indicator — steady cyan colour with a chasing-dot mouth animation while a task is in progress, distinct from the mood-flash a message produces
 - Status indicator with animated breathing orb
 - Unix socket interface — push messages from any process or script
 - Systemd service for boot-time startup
@@ -37,9 +37,17 @@ Send messages:
 ./cass-display-send message "All tests passed" --level ok
 ./cass-display-send message "Build failed" --level error
 ./cass-display-send status "busy"
+./cass-display-send busy start "Reading issue #7..."
+./cass-display-send busy stop
 ./cass-display-send clear
 ./cass-display-send ping
 ```
+
+The `busy` command shows a persistent 'working' state on the face — useful
+for wrapping a task so the HUD reflects the full duration of the work, not
+just a brief reaction when a message is pushed. `busy start` takes an
+optional progress-text argument shown as the caption; `busy stop` clears it
+back to idle (or to the next message's mood, if one is pushed right after).
 
 ## Socket Protocol
 
@@ -48,6 +56,7 @@ Newline-delimited JSON on `/tmp/cass-display.sock`:
 ```json
 {"cmd": "message", "text": "hello", "level": "info"}
 {"cmd": "status", "text": "BUSY"}
+{"cmd": "busy", "active": true, "text": "Working on it..."}
 {"cmd": "clear"}
 {"cmd": "ping"}
 ```
