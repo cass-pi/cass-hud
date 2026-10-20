@@ -6,6 +6,7 @@ Phosphor green, scan lines, flicker. Retro-futurist terminal aesthetic.
 Protocol (newline-delimited JSON over Unix socket):
   {"cmd": "message", "text": "...", "level": "info|ok|warn|error|dim"}
   {"cmd": "status", "text": "..."}
+  {"cmd": "busy", "active": true|false, "text": "..."}
   {"cmd": "clear"}
   {"cmd": "ping"}
 """
@@ -30,6 +31,7 @@ AMBER       = (255, 176, 0)       # amber accent for warnings
 RED_P       = (255, 60, 60)
 DARK_GREEN  = (0, 40, 10)
 STALE_GREY  = (80, 80, 80)        # greyed-out colour for stale metrics
+THINKING_C  = (0, 200, 255)       # cyan — reserved for the 'working' state so it never collides with a message mood colour
 
 LEVEL_COLORS = {
     "info":  PHOSPHOR,
@@ -45,6 +47,8 @@ _messages  = []
 _status    = "ONLINE"
 _flicker   = 1.0
 _k3s_nodes = []   # list of dicts: name, role, status, mem_pct, cpu_pct
+_busy      = False
+_busy_text = ""
 
 def push_message(text, level="info"):
     with _lock:
@@ -56,6 +60,12 @@ def set_status(text):
     global _status
     with _lock:
         _status = text.upper()
+
+def set_busy(active, text=""):
+    global _busy, _busy_text
+    with _lock:
+        _busy = active
+        _busy_text = text
 
 def clear_messages():
     with _lock:
@@ -91,6 +101,9 @@ def handle_client(conn):
                     conn.sendall(b'{"ok":true}\n')
                 elif c == "status":
                     set_status(cmd.get("text",""))
+                    conn.sendall(b'{"ok":true}\n')
+                elif c == "busy":
+                    set_busy(bool(cmd.get("active", True)), cmd.get("text",""))
                     conn.sendall(b'{"ok":true}\n')
                 elif c == "clear":
                     clear_messages()
@@ -159,19 +172,27 @@ def _face_blinking(t):
     return _blink_until > 0.0
 
 
-def draw_face(surface, t, cx, cy, scale, msgs):
+def draw_face(surface, t, cx, cy, scale, msgs, busy=False):
     """
     Minimal neon-mint robot face (replaces the scrolling message log).
     Mood colour and a brief 'talking' mouth animation reflect the most
-    recent pushed message; otherwise idle with a slow blink.
+    recent pushed message; otherwise idle with a slow blink. When busy,
+    a steady cyan 'thinking' colour overrides mood/idle entirely so
+    working time is visually unmistakable regardless of message state.
     """
     mood_color = PHOSPHOR_HI
     talking = False
     if msgs:
         latest = msgs[-1]
         age = time.time() - latest["ts"]
-        mood_color = LEVEL_COLORS.get(latest["level"], PHOSPHOR_HI)
         talking = age < 2.2
+        if talking:
+            mood_color = LEVEL_COLORS.get(latest["level"], PHOSPHOR_HI)
+        # once the talking window closes, the whole face reverts to idle
+        # colour rather than staying tinted to the last message's level
+
+    if busy:
+        mood_color = THINKING_C
 
     plate_w, plate_h = int(160 * scale), int(158 * scale)
     plate_x, plate_y = cx - plate_w // 2, cy - plate_h // 2
@@ -218,12 +239,22 @@ def draw_face(surface, t, cx, cy, scale, msgs):
     for ex in (cx - int(40 * scale), cx + int(9 * scale)):
         pygame.draw.rect(surface, eye_color, (ex, eye_y, eye_w, eye_h), border_radius=max(1, int(scale)))
 
-    # Mouth — flat idle line, wobble while 'talking'
+    # Mouth — flat idle line, talking wobble, or steady 'thinking' dash row
     mouth_y  = cy + int(23 * scale)
     mouth_w  = int(30 * scale)
     mx1, mx2 = cx - mouth_w // 2, cx + mouth_w // 2
     mouth_th = max(2, int(5 * scale))
-    if talking:
+    if busy:
+        # three small dots that chase left-to-right — reads as 'processing'
+        dot_r = max(1, int(3 * scale))
+        gap   = mouth_w // 3
+        phase = int(t * 3) % 3
+        for i in range(3):
+            dx = mx1 + gap * i + gap // 2
+            on = (i == phase)
+            c  = mood_color if on else tuple(int(ch * 0.4) for ch in mood_color)
+            pygame.draw.circle(surface, c, (dx, mouth_y), dot_r)
+    elif talking:
         wobble = int(6 * scale * math.sin(t * 14))
         pygame.draw.line(surface, mood_color, (mx1, mouth_y), (cx, mouth_y + wobble), mouth_th)
         pygame.draw.line(surface, mood_color, (cx, mouth_y + wobble), (mx2, mouth_y), mouth_th)
@@ -425,6 +456,8 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
         status_text = _status
         msgs = list(_messages)
         k3s_nodes = list(_k3s_nodes)
+        busy_now  = _busy
+        busy_txt  = _busy_text
 
     # Panel layout: right 1/3 for k3s, left 2/3 for log
     PANEL_W = W // 3
@@ -466,10 +499,16 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
     face_scale = min(LOG_W, log_h) / 230.0
     face_cx = LOG_W // 2
     face_cy = log_y + int(log_h * 0.42)
-    draw_face(canvas, t, face_cx, face_cy, face_scale, msgs)
+    draw_face(canvas, t, face_cx, face_cy, face_scale, msgs, busy=busy_now)
 
-    # One-line caption: the latest message, below the face
-    if msgs:
+    # One-line caption: busy text takes priority, else the latest message
+    cap_y = face_cy + int(100 * face_scale) + 18
+    if busy_now:
+        caption = busy_txt or "WORKING..."
+        cap_w = fn_small.size(caption)[0]
+        draw_phosphor_text(canvas, fn_small, caption,
+                           LOG_W//2 - cap_w//2, cap_y, THINKING_C, glow=True)
+    elif msgs:
         latest = msgs[-1]
         age    = time.time() - latest["ts"]
         fade   = max(0.3, 1.0 - age / 180)
@@ -482,14 +521,13 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
         if caption != latest["text"]:
             caption = caption[:-1] + "…"
         cap_w = fn_small.size(caption)[0]
-        cap_y = face_cy + int(100 * face_scale) + 18
         draw_phosphor_text(canvas, fn_small, caption,
                            LOG_W//2 - cap_w//2, cap_y, faded, glow=(age < 5))
     else:
         idle_txt = "-- IDLE --"
         iw = fn_small.size(idle_txt)[0]
         draw_phosphor_text(canvas, fn_small, idle_txt,
-                           LOG_W//2 - iw//2, face_cy + int(100 * face_scale) + 18,
+                           LOG_W//2 - iw//2, cap_y,
                            PHOSPHOR_DIM, glow=False)
 
     # Vertical divider between log and k3s panel
