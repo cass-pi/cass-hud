@@ -142,6 +142,96 @@ def draw_phosphor_text(surface, font, text, x, y, color, glow=True):
     surface.blit(surf, (x, y))
     return surf.get_width()
 
+# ── Face ──────────────────────────────────────────────────────────────────────
+_next_blink_at = 0.0
+_blink_until    = 0.0
+
+def _face_blinking(t):
+    """Advance/check an idle, randomised blink cycle."""
+    global _next_blink_at, _blink_until
+    if _next_blink_at == 0.0:
+        _next_blink_at = t + random.uniform(2.5, 5.5)
+    if t >= _next_blink_at and _blink_until == 0.0:
+        _blink_until = t + 0.12
+        _next_blink_at = t + random.uniform(2.5, 6.5)
+    if _blink_until and t >= _blink_until:
+        _blink_until = 0.0
+    return _blink_until > 0.0
+
+
+def draw_face(surface, t, cx, cy, scale, msgs):
+    """
+    Minimal neon-mint robot face (replaces the scrolling message log).
+    Mood colour and a brief 'talking' mouth animation reflect the most
+    recent pushed message; otherwise idle with a slow blink.
+    """
+    mood_color = PHOSPHOR_HI
+    talking = False
+    if msgs:
+        latest = msgs[-1]
+        age = time.time() - latest["ts"]
+        mood_color = LEVEL_COLORS.get(latest["level"], PHOSPHOR_HI)
+        talking = age < 2.2
+
+    plate_w, plate_h = int(160 * scale), int(158 * scale)
+    plate_x, plate_y = cx - plate_w // 2, cy - plate_h // 2
+    radius = max(4, int(29 * scale))
+    border = max(2, int(4 * scale))
+
+    # Faceplate
+    pygame.draw.rect(surface, (6, 27, 23), (plate_x, plate_y, plate_w, plate_h), border_radius=radius)
+    pygame.draw.rect(surface, mood_color, (plate_x, plate_y, plate_w, plate_h), width=border, border_radius=radius)
+
+    # Side tick marks either side of the faceplate
+    tick_color = tuple(int(c * 0.75) for c in mood_color)
+    tick_len   = max(4, int(14 * scale))
+    for side in (-1, 1):
+        tx = cx + side * (plate_w // 2 + int(26 * scale))
+        y1 = plate_y + int(34 * scale)
+        y2 = plate_y + int(47 * scale)
+        y3 = plate_y + int(102 * scale)
+        pygame.draw.line(surface, tick_color, (tx - side * tick_len, y1), (tx, y1), max(1, int(3 * scale)))
+        pygame.draw.line(surface, tick_color, (tx - side * int(6 * scale), y2), (tx, y2), max(1, int(2 * scale)))
+        pygame.draw.line(surface, tick_color, (tx - side * tick_len, y3), (tx, y3), max(1, int(3 * scale)))
+
+    # Inner bezel lines
+    bez_color = tuple(int(c * 0.6) for c in mood_color)
+    pygame.draw.line(surface, bez_color,
+                     (plate_x + int(22 * scale), plate_y + int(16 * scale)),
+                     (plate_x + plate_w - int(22 * scale), plate_y + int(16 * scale)),
+                     max(1, int(2 * scale)))
+    pygame.draw.line(surface, bez_color,
+                     (plate_x + int(14 * scale), plate_y + plate_h - int(17 * scale)),
+                     (plate_x + plate_w - int(14 * scale), plate_y + plate_h - int(17 * scale)),
+                     max(1, int(2 * scale)))
+
+    blinking = _face_blinking(t)
+
+    eye_w, eye_h = int(31 * scale), int(32 * scale)
+    eye_y = cy - int(22 * scale)
+    if blinking:
+        shut_h = max(2, int(eye_h * 0.12))
+        eye_y += (eye_h - shut_h)
+        eye_h = shut_h
+
+    eye_color = mood_color if talking else PHOSPHOR_HI
+    for ex in (cx - int(40 * scale), cx + int(9 * scale)):
+        pygame.draw.rect(surface, eye_color, (ex, eye_y, eye_w, eye_h), border_radius=max(1, int(scale)))
+
+    # Mouth — flat idle line, wobble while 'talking'
+    mouth_y  = cy + int(23 * scale)
+    mouth_w  = int(30 * scale)
+    mx1, mx2 = cx - mouth_w // 2, cx + mouth_w // 2
+    mouth_th = max(2, int(5 * scale))
+    if talking:
+        wobble = int(6 * scale * math.sin(t * 14))
+        pygame.draw.line(surface, mood_color, (mx1, mouth_y), (cx, mouth_y + wobble), mouth_th)
+        pygame.draw.line(surface, mood_color, (cx, mouth_y + wobble), (mx2, mouth_y), mouth_th)
+    else:
+        idle_color = tuple(int(c * 0.55) for c in mood_color)
+        pygame.draw.line(surface, idle_color, (mx1, mouth_y), (mx2, mouth_y), mouth_th)
+
+
 def draw_orb(surface, cx, cy, t, status):
     """Pulsing CRT-style indicator."""
     pulse = 0.5 + 0.5 * math.sin(t * 2.5)
@@ -369,35 +459,38 @@ def render(canvas, fonts, t, RENDER_W=1280, RENDER_H=480):
     draw_phosphor_text(canvas, fn_small, date_str,
                        W - fn_small.size(date_str)[0] - 20, 32, PHOSPHOR_DIM, glow=False)
 
-    # ── Message log ──────────────────────────────────────────────────────────
+    # ── Face ─────────────────────────────────────────────────────────────────
     log_y  = header_h + 8
-    line_h = 34
+    log_h  = H - log_y - 30
 
-    if not msgs:
-        draw_phosphor_text(canvas, fn_small, "-- NO MESSAGES --",
-                           LOG_W//2 - fn_small.size("-- NO MESSAGES --")[0]//2,
-                           H//2 - 10, PHOSPHOR_DIM, glow=False)
+    face_scale = min(LOG_W, log_h) / 230.0
+    face_cx = LOG_W // 2
+    face_cy = log_y + int(log_h * 0.42)
+    draw_face(canvas, t, face_cx, face_cy, face_scale, msgs)
+
+    # One-line caption: the latest message, below the face
+    if msgs:
+        latest = msgs[-1]
+        age    = time.time() - latest["ts"]
+        fade   = max(0.3, 1.0 - age / 180)
+        color  = LEVEL_COLORS.get(latest["level"], PHOSPHOR)
+        faded  = tuple(int(c * fade * _flicker) for c in color)
+        caption = latest["text"]
+        max_w = LOG_W - 40
+        while fn_small.size(caption)[0] > max_w and len(caption) > 4:
+            caption = caption[:-1]
+        if caption != latest["text"]:
+            caption = caption[:-1] + "…"
+        cap_w = fn_small.size(caption)[0]
+        cap_y = face_cy + int(100 * face_scale) + 18
+        draw_phosphor_text(canvas, fn_small, caption,
+                           LOG_W//2 - cap_w//2, cap_y, faded, glow=(age < 5))
     else:
-        for i, msg in enumerate(reversed(msgs)):
-            y = log_y + i * line_h
-            if y + line_h > H - 28:
-                break
-
-            age    = time.time() - msg["ts"]
-            fade   = max(0.25, 1.0 - age / 180)
-            color  = LEVEL_COLORS.get(msg["level"], PHOSPHOR)
-            faded  = tuple(int(c * fade * _flicker) for c in color)
-
-            # Timestamp
-            ts = time.strftime("%H:%M:%S", time.localtime(msg["ts"]))
-            draw_phosphor_text(canvas, fn_small, ts, 10, y, PHOSPHOR_DIM, glow=False)
-
-            # Level
-            tag = f"{msg['level'].upper():<5}"
-            draw_phosphor_text(canvas, fn_small, tag, 90, y, faded, glow=False)
-
-            # Message (clipped to log column width)
-            draw_phosphor_text(canvas, fn_small, msg["text"], 160, y, faded, glow=(age < 5))
+        idle_txt = "-- IDLE --"
+        iw = fn_small.size(idle_txt)[0]
+        draw_phosphor_text(canvas, fn_small, idle_txt,
+                           LOG_W//2 - iw//2, face_cy + int(100 * face_scale) + 18,
+                           PHOSPHOR_DIM, glow=False)
 
     # Vertical divider between log and k3s panel
     pygame.draw.line(canvas, PHOSPHOR_DIM, (LOG_W, header_h), (LOG_W, H-30), 1)
