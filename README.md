@@ -125,7 +125,8 @@ The daemon renders a landscape canvas (1280×480) and rotates it 90° CCW in sof
 `presto-bridge.py` is a standalone process (separate from `cass-display.service`)
 that relays JSON between Cass/the Gateway and a Pimoroni Presto board connected
 over USB serial. It is not a Presto firmware image itself — the Presto-side
-code is tracked separately (issue #12); this is the Pi-side half of that pair.
+code lives in `presto-firmware/` (issue #12); this is the Pi-side half of that
+pair.
 
 - Listens on a local Unix socket (`/tmp/presto-bridge.sock`) for `fyi`
   (non-blocking) and `choice` (blocking, button-driven) messages to show on
@@ -165,3 +166,10 @@ Full protocol and design rationale: `docs/presto-bridge-protocol.md`.
 ./presto-send clear
 ./presto-send ping
 ```
+
+### Presto firmware
+
+The code that actually runs on the Presto board (renders the screen,
+detects touch): `presto-firmware/`. See `presto-firmware/README.md` for
+what it does, the current palette status (placeholder, pending Bear's
+colour choice per issue #14/#15), and how it was tested.

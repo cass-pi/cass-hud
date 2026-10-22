@@ -95,5 +95,32 @@ kept in sync with `README.md` — a drift between the two has already
 happened once in this repo for the other protocol, don't repeat it here.
 
 The Presto's own firmware (what actually renders to the screen and reports
-touches) is tracked separately (issue #12) — this process is only the
+touches) lives in `presto-firmware/` (issue #12) — this process is only the
 Pi-side relay half.
+
+## Presto firmware (`presto-firmware/`, runs on the board, not the Pi)
+
+This is a third kind of "code on disk ≠ code running" case, different from
+the other two: it's not a systemd service on the Pi at all. It's MicroPython
+that runs directly on the Presto board's own flash, deployed via
+`mpremote connect /dev/ttyACM0 fs cp presto-firmware/main.py :main.py`
+followed by a board reset — see `presto-firmware/README.md`.
+
+- Use `mpremote`, not hand-rolled `pyserial`/raw file-descriptor code, for
+  any interactive testing against the real board. See
+  `docs/presto-probing-findings.md` and the `micropython-usb-serial` skill
+  for why — a prior probing session lost significant time to a
+  self-inflicted serial-protocol bug before switching tools.
+- No automated test suite exists for this code (MicroPython running on
+  dedicated hardware). Before claiming a change works, actually copy it to
+  the board as a throwaway test file and exercise it via `mpremote exec`
+  against the real `Presto()`/`PicoGraphics` instance — don't rely on
+  `python3 -m py_compile` alone, which only catches syntax errors, not
+  calls to APIs that don't exist on this board's actual firmware.
+- Remove any throwaway test files from the board's filesystem
+  (`mpremote ... fs rm`) once done; confirm via `fs ls` that only the
+  intended files remain.
+- The exact FYI/choice colour palette is an open question (issue #14/#15
+  ask for 2-3 mocked-up options, not a guessed final answer) — don't
+  present a palette choice as final in a PR unless Bear has actually
+  picked one.
