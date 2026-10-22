@@ -72,3 +72,28 @@ A change to the face, socket protocol, or CLI (`cass-display-send`) usually
 means `README.md`'s Features/Usage/Socket Protocol sections are now stale.
 Check and update them in the same PR as the behavior change, not as a
 follow-up someone has to notice and ask for separately.
+
+## Presto bridge (separate process, separate service)
+
+`presto-bridge.py` is a second, independent long-lived process on this Pi —
+not part of `cass-display.service`, running as its own systemd unit
+(`presto-bridge.service`). Same "code on disk ≠ code running" rule applies:
+changes need `sudo systemctl restart presto-bridge.service` before they're
+live, verified the same way (`systemctl status`, `journalctl`).
+
+It owns a single long-lived serial connection to the Presto board
+(`/dev/ttyACM0`). **Never add code that opens and closes that connection per
+message** — see `docs/presto-probing-findings.md` for why that's unreliable
+on this specific board (close can hang unpredictably). Open once at process
+start, keep it open for the life of the process, let a crash/restart be the
+only way the connection gets re-established.
+
+Full protocol (socket commands, serial message shapes, Gateway wake
+integration): `docs/presto-bridge-protocol.md`. Keep it in sync with
+`presto-bridge.py` and `presto-send` the same way the main socket protocol is
+kept in sync with `README.md` — a drift between the two has already
+happened once in this repo for the other protocol, don't repeat it here.
+
+The Presto's own firmware (what actually renders to the screen and reports
+touches) is tracked separately (issue #12) — this process is only the
+Pi-side relay half.

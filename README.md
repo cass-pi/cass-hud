@@ -119,3 +119,49 @@ If a node is `NotReady`, its name turns red and glows.
 ## Display Rotation
 
 The daemon renders a landscape canvas (1280×480) and rotates it 90° CCW in software to fill a portrait physical screen. No OS-level rotation needed.
+
+## Presto Bridge
+
+`presto-bridge.py` is a standalone process (separate from `cass-display.service`)
+that relays JSON between Cass/the Gateway and a Pimoroni Presto board connected
+over USB serial. It is not a Presto firmware image itself — the Presto-side
+code is tracked separately (issue #12); this is the Pi-side half of that pair.
+
+- Listens on a local Unix socket (`/tmp/presto-bridge.sock`) for `fyi`
+  (non-blocking) and `choice` (blocking, button-driven) messages to show on
+  the Presto, plus `clear` to dismiss whatever's currently showing.
+- Holds one long-lived serial connection to the Presto (never opens/closes
+  per message — see `docs/presto-probing-findings.md` for why that's
+  unreliable on this board) and relays those commands over it.
+- Reads button-tap responses back from the Presto over the same connection
+  and forwards confirmed choices to the Gateway via `POST /hooks/wake`, the
+  same pattern already proven working for the GitHub webhook receiver.
+
+Full protocol and design rationale: `docs/presto-bridge-protocol.md`.
+
+### Requirements
+
+- `python3-serial` / `pyserial` (`pip install pyserial` or
+  `sudo apt install python3-serial`)
+- A Presto flashed with firmware that speaks this protocol (issue #12)
+
+### Setup
+
+1. Copy `presto-bridge.env.example` to
+   `/home/ian/.openclaw/credentials/presto-bridge.env` and fill in
+   `HOOKS_TOKEN` (same value as `hooks.token` in `openclaw.json`).
+2. Install the systemd service:
+   ```bash
+   sudo cp presto-bridge.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now presto-bridge.service
+   ```
+
+### Manual testing
+
+```bash
+./presto-send fyi "Finished the README update" --level ok
+./presto-send choice "Option A or B?" a:"Option A" b:"Option B"
+./presto-send clear
+./presto-send ping
+```
