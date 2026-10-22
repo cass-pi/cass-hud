@@ -1,0 +1,18 @@
+[Unit]
+Description=Presto Bridge — JSON relay between Gateway and Presto over USB serial
+After=network-online.target
+
+[Service]
+Type=simple
+User=ian
+EnvironmentFile=-/home/ian/.openclaw/credentials/presto-bridge.env
+Environment=GATEWAY_URL=http://localhost:18789
+Environment=PRESTO_SERIAL_PORT=/dev/ttyACM0
+Environment=PRESTO_BAUD=115200
+Environment=PRESTO_SOCKET_PATH=/tmp/presto-bridge.sock
+ExecStart=/usr/bin/python3 /home/ian/Projects/cass-hud/presto-bridge.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
