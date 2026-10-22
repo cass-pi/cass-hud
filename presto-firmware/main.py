@@ -253,9 +253,15 @@ def render_choice():
 
 
 def handle_choice_touch(x, y):
+    global state
     for (bx, by, bw, bh, opt_id) in _choice_hit_regions:
         if bx <= x <= bx + bw and by <= y <= by + bh:
             send_serial({"type": "choice_response", "id": opt_id})
+            # Answered — stop showing this choice immediately so the same
+            # tap (or a lingering finger) can't fire a second response
+            # before the Pi side gets around to sending a clear/next
+            # message. Re-prompting, if needed, is still the Pi's job.
+            state = "idle"
             return
 
 
