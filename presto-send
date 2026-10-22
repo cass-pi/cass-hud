@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""
+presto-send — push a message/command to the Presto bridge daemon.
+
+Usage:
+  presto-send fyi "Finished the README update" [--level info|ok|warn|error]
+  presto-send choice "Option A or B?" a:"Option A" b:"Option B"
+  presto-send clear
+  presto-send ping
+
+Protocol details: see docs/presto-bridge-protocol.md
+"""
+
+import sys
+import json
+import socket
+import re
+
+SOCKET_PATH = "/tmp/presto-bridge.sock"
+
+
+def send(payload):
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(SOCKET_PATH)
+        s.sendall((json.dumps(payload) + "\n").encode())
+        resp = s.recv(4096)
+        s.close()
+        print(resp.decode().strip())
+    except FileNotFoundError:
+        print("error: presto-bridge not running (socket not found)", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def parse_option(arg):
+    """Parse an `id:"label"` or `id:label` CLI argument into {"id","label"}."""
+    m = re.match(r'^([^:]+):(.*)$', arg)
+    if not m:
+        print(f"error: bad option format: {arg!r} (expected id:\"label\")", file=sys.stderr)
+        sys.exit(1)
+    opt_id, label = m.group(1), m.group(2)
+    label = label.strip()
+    if label.startswith('"') and label.endswith('"') and len(label) >= 2:
+        label = label[1:-1]
+    return {"id": opt_id, "label": label}
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = args[0]
+
+    if cmd == "fyi":
+        text = args[1] if len(args) > 1 else ""
+        level = "info"
+        if "--level" in args:
+            idx = args.index("--level")
+            level = args[idx + 1] if idx + 1 < len(args) else "info"
+        send({"cmd": "fyi", "text": text, "level": level})
+
+    elif cmd == "choice":
+        if len(args) < 2:
+            print("error: choice needs text and at least one option", file=sys.stderr)
+            sys.exit(1)
+        text = args[1]
+        options = [parse_option(a) for a in args[2:]]
+        if not options:
+            print("error: choice needs at least one option (e.g. a:\"Option A\")", file=sys.stderr)
+            sys.exit(1)
+        send({"cmd": "choice", "text": text, "options": options})
+
+    elif cmd == "clear":
+        send({"cmd": "clear"})
+
+    elif cmd == "ping":
+        send({"cmd": "ping"})
+
+    else:
+        print(f"unknown command: {cmd}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
