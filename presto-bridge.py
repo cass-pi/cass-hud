@@ -29,6 +29,7 @@ import glob
 import socket
 import logging
 import threading
+import uuid
 import urllib.request
 import urllib.error
 
@@ -162,6 +163,14 @@ def handle_serial_line(line):
         text = f'Presto: Bear chose "{label}" for: "{choice.get("text", "")}"'
         log.info("choice_response: %s", text)
         wake_gateway(text)
+    elif mtype == "thermal_snapshot":
+        with _pending_lock:
+            slot = _pending_thermal.get(msg.get("id"))
+        if slot is None:
+            log.warning("thermal_snapshot for unknown/expired id %r", msg.get("id"))
+        else:
+            slot["msg"] = msg
+            slot["event"].set()
     elif mtype == "hello":
         log.info("serial: Presto firmware said hello")
     else:
@@ -183,6 +192,60 @@ def serial_write(obj):
         except OSError as e:
             log.warning("serial write failed: %s", e)
             return False
+
+
+# ── Thermal snapshots (AMG8833 behind the Presto) ───────────────────────────
+THERMAL_TIMEOUT_S = 4.0
+WARM_DELTA_C      = 4.0   # a pixel counts as "warm" if this far above the frame median
+
+_pending_lock = threading.Lock()
+_pending_thermal = {}  # request id -> {"event": threading.Event, "msg": dict|None}
+
+
+def summarise_thermal(msg):
+    """Turn a raw 64-pixel frame into numbers that are easy to reason about.
+
+    Deliberately no "person present" boolean: 8x8 pixels at unknown distance
+    needs calibrating against a real empty-desk vs occupied frame first.
+    """
+    px = msg.get("pixels") or []
+    if len(px) != 64:
+        return {"ok": False, "error": "bad frame: expected 64 pixels, got %d" % len(px)}
+    ordered = sorted(px)
+    median = (ordered[31] + ordered[32]) / 2
+    hottest = max(range(64), key=lambda i: px[i])
+    return {
+        "ok": True,
+        "ambient": msg.get("ambient"),
+        "min": min(px),
+        "max": max(px),
+        "mean": round(sum(px) / 64, 2),
+        "median": round(median, 2),
+        "spread": round(max(px) - median, 2),
+        "warm_pixels": sum(1 for v in px if v > median + WARM_DELTA_C),
+        "hottest": {"row": hottest // 8, "col": hottest % 8, "temp": px[hottest]},
+        "pixels": [px[r * 8:(r + 1) * 8] for r in range(8)],
+    }
+
+
+def request_thermal_snapshot():
+    """Ask the firmware for a fresh frame and wait for the reply."""
+    req_id = uuid.uuid4().hex[:8]
+    slot = {"event": threading.Event(), "msg": None}
+    with _pending_lock:
+        _pending_thermal[req_id] = slot
+    try:
+        if not serial_write({"type": "thermal_snapshot", "id": req_id}):
+            return {"ok": False, "error": "serial not connected"}
+        if not slot["event"].wait(THERMAL_TIMEOUT_S):
+            return {"ok": False, "error": "timed out waiting for the Presto"}
+        msg = slot["msg"]
+    finally:
+        with _pending_lock:
+            _pending_thermal.pop(req_id, None)
+    if msg.get("error"):
+        return {"ok": False, "error": msg["error"]}
+    return summarise_thermal(msg)
 
 
 # ── Local socket: commands from Cass/the Gateway ────────────────────────────
@@ -239,6 +302,9 @@ def handle_socket_line(line):
         with _last_choice_lock:
             _last_choice = None
         return '{"ok":true}' if ok else '{"ok":false,"error":"serial not connected"}'
+
+    if c == "thermal":
+        return json.dumps(request_thermal_snapshot())
 
     if c == "ping":
         return '"pong"'

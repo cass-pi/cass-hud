@@ -26,6 +26,7 @@ Newline-delimited JSON, one object per line, same shape as
 {"cmd": "fyi", "text": "...", "level": "info|ok|warn|error"}
 {"cmd": "choice", "text": "...", "options": [{"id": "a", "label": "..."}, ...]}
 {"cmd": "clear"}
+{"cmd": "thermal"}
 {"cmd": "ping"}
 ```
 
@@ -43,6 +44,7 @@ Newline-delimited JSON, one object per line, same shape as
   replaces this one" and for an external event resolving a blocking choice
   (e.g. a PR merge webhook) — the device doesn't know or care which case
   it is, same behaviour either way, per issue #15.
+- `thermal` — read the AMG8833 sensor on the Presto right now. Unlike the other commands this one **waits for a reply** (up to 4s) and returns a summary of the frame, not just `{"ok":true}`. See "Thermal camera" below.
 - `ping` — health check, replies `"pong"`.
 
 Replies on the same connection: `{"ok": true}` / `{"error": "..."}` /
@@ -59,6 +61,7 @@ Also newline-delimited JSON, one object per line, sent over the same
 {"type": "fyi", "text": "...", "level": "info|ok|warn|error"}
 {"type": "choice", "text": "...", "options": [{"id": "a", "label": "..."}]}
 {"type": "clear"}
+{"type": "thermal_snapshot", "id": "<request id>"}
 ```
 
 Mirrors the socket commands 1:1 — the bridge mostly just relabels `cmd` to
@@ -71,6 +74,7 @@ simply replaces it.
 
 ```
 {"type": "choice_response", "id": "a"}
+{"type": "thermal_snapshot", "id": "<request id>", "ambient": 23.8, "pixels": [64 floats, row-major]}
 {"type": "hello"}
 ```
 
@@ -81,9 +85,20 @@ simply replaces it.
 - `hello` — optional, sent once by firmware on boot/reset so the bridge's
   log shows when the board came back online (e.g. after a firmware
   update). Not required for correctness.
-- Idle-animation taps (issue #13, tap-to-recolour) are **not** reported
+- Idle-screen taps (open the thermal view, or recolour if no sensor is fitted) are **not** reported
   over serial — that behaviour is self-contained on the device and has no
   effect outside it, so there's nothing for the bridge to relay.
+
+## Thermal camera (AMG8833)
+
+An AMG8833 8x8 infrared array on the Presto's Qw/ST port (I2C0, GPIO 40/41, address `0x69`).
+
+- **On the Presto:** tapping the idle screen opens a live heatmap (8x8 upscaled to the 480x480 screen, iron palette, min/max, centre temperature). Tapping again returns to idle. Any message from the Pi (`fyi`, `choice`, `clear`) replaces it like any other state. If no sensor is detected at boot, the idle tap falls back to the original recolour.
+- **From the Pi:** `presto-send thermal` (or `{"cmd": "thermal"}` on the socket) sends a `thermal_snapshot` request to the firmware, which reads the sensor and replies. It works in **any** state and does not change what's on screen.
+- The bridge returns: `ambient` (the sensor's own thermistor), `min`/`max`/`mean`/`median`, `spread` (max minus median), `warm_pixels` (pixels more than 4C above the median), `hottest` (row/col/temp) and the full 8x8 `pixels` grid in degrees C.
+- Errors come back as `{"ok": false, "error": "..."}`: serial not connected, sensor unavailable, or no reply within 4s.
+
+**Presence detection is not a built-in boolean.** An 8x8 frame at an unknown distance needs calibrating: take a snapshot with the desk empty and one with someone sitting there, and compare `warm_pixels` and `spread`. Until that's done, read the grid rather than trusting a threshold.
 
 ## Bridge → Gateway
 
