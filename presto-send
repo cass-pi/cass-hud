@@ -6,6 +6,7 @@ Usage:
   presto-send fyi "Finished the README update" [--level info|ok|warn|error]
   presto-send choice "Option A or B?" a:"Option A" b:"Option B"
   presto-send clear
+  presto-send thermal [--json]
   presto-send ping
 
 Protocol details: see docs/presto-bridge-protocol.md
@@ -19,20 +20,48 @@ import re
 SOCKET_PATH = "/tmp/presto-bridge.sock"
 
 
-def send(payload):
+def request(payload, timeout=10):
+    """Send one command and return the single-line reply (reads to newline)."""
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
         s.connect(SOCKET_PATH)
         s.sendall((json.dumps(payload) + "\n").encode())
-        resp = s.recv(4096)
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
         s.close()
-        print(resp.decode().strip())
+        return buf.decode().strip()
     except FileNotFoundError:
         print("error: presto-bridge not running (socket not found)", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def send(payload):
+    print(request(payload))
+
+
+def thermal(raw):
+    text = request({"cmd": "thermal"})
+    if raw:
+        print(text)
+        return
+    d = json.loads(text)
+    if not d.get("ok"):
+        print(f"error: {d.get('error', 'unknown')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"ambient {d['ambient']}C  min {d['min']}  max {d['max']}  "
+          f"median {d['median']}  spread {d['spread']}  warm pixels {d['warm_pixels']}")
+    h = d["hottest"]
+    print(f"hottest: row {h['row']} col {h['col']} = {h['temp']}C")
+    for row in d["pixels"]:
+        print(" ".join(f"{v:5.1f}" for v in row))
 
 
 def parse_option(arg):
@@ -77,6 +106,9 @@ def main():
 
     elif cmd == "clear":
         send({"cmd": "clear"})
+
+    elif cmd == "thermal":
+        thermal("--json" in args)
 
     elif cmd == "ping":
         send({"cmd": "ping"})

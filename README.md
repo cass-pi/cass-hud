@@ -164,6 +164,7 @@ Full protocol and design rationale: `docs/presto-bridge-protocol.md`.
 ./presto-send fyi "Finished the README update" --level ok
 ./presto-send choice "Option A or B?" a:"Option A" b:"Option B"
 ./presto-send clear
+./presto-send thermal
 ./presto-send ping
 ```
 
