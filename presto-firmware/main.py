@@ -26,6 +26,7 @@ import time
 import math
 import random
 
+from machine import I2C, Pin
 from presto import Presto
 
 # ── Display setup ────────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ PALETTE_OPTIONS = {
 PALETTE = PALETTE_OPTIONS["cool"]
 
 # ── State ────────────────────────────────────────────────────────────────────
-# state is one of: "idle", "fyi", "choice"
+# state is one of: "idle", "fyi", "choice", "thermal"
 state = "idle"
 fyi_text = ""
 fyi_level = "info"
@@ -135,6 +136,10 @@ def apply_message(msg):
         choice_text = msg.get("text", "")
         choice_options = msg.get("options", [])
         state = "choice"
+    elif mtype == "thermal_snapshot":
+        # On-demand sensor read for the Pi. Replies over serial and leaves
+        # whatever is on screen alone.
+        send_thermal_snapshot(msg.get("id"))
     elif mtype == "clear":
         state = "idle"
     # Unknown types are ignored rather than crashing the render loop.
@@ -272,6 +277,191 @@ def vector_text_block(text, max_w, max_h, scale=2):
     display.text(text, 10, 10, max_w - 20, scale)
 
 
+# ── Thermal camera (AMG8833 on the Qw/ST port, I2C0 GPIO 40/41) ─────────────
+AMG_ADDR = 0x69
+AMG_GRID = 32            # 8x8 sensor bilinearly upscaled to GRID x GRID cells
+AMG_FRAME_MS = 100       # the sensor free-runs at 10 fps
+AMG_MIN_SPAN_C = 8.0     # never stretch the palette over less than this range
+
+# "Iron" palette, cold -> hot
+_IRON = ((0, 0, 16), (70, 0, 120), (190, 30, 60), (250, 120, 0), (255, 220, 40), (255, 255, 220))
+
+_amg_bus = None
+_amg_ok = False
+_thermal_frame = None    # last good frame: 64 floats, degrees C, row-major
+_thermal_ambient = 0.0   # the sensor's own thermistor reading
+_thermal_last_read = 0
+_thermal_pens = None     # 64-entry palette lookup, built on first draw
+_thermal_axis = None     # per-output-cell source index + fraction
+
+
+def amg_init():
+    """Probe for the sensor and start it at 10 fps. Missing sensor is fine —
+    the firmware just behaves as it did before (no thermal view)."""
+    global _amg_bus, _amg_ok
+    try:
+        _amg_bus = I2C(0, sda=Pin(40), scl=Pin(41), freq=400000)
+        if AMG_ADDR not in _amg_bus.scan():
+            return
+        _amg_bus.writeto_mem(AMG_ADDR, 0x00, b"\x00")  # normal mode
+        time.sleep_ms(50)
+        _amg_bus.writeto_mem(AMG_ADDR, 0x02, b"\x00")  # 10 fps
+        _amg_ok = True
+    except Exception:
+        _amg_ok = False
+
+
+def amg_read():
+    """Return (pixels, ambient) in degrees C, or None if the read fails."""
+    try:
+        raw = _amg_bus.readfrom_mem(AMG_ADDR, 0x80, 128)
+        t = _amg_bus.readfrom_mem(AMG_ADDR, 0x0E, 2)
+    except Exception:
+        return None
+    px = []
+    for i in range(64):
+        v = raw[2 * i] | ((raw[2 * i + 1] & 0x0F) << 8)
+        if v & 0x800:
+            v -= 0x1000
+        px.append(v * 0.25)
+    tv = t[0] | ((t[1] & 0x07) << 8)
+    if t[1] & 0x08:
+        tv = -tv
+    return px, tv * 0.0625
+
+
+def send_thermal_snapshot(req_id):
+    res = amg_read() if _amg_ok else None
+    if res is None:
+        send_serial({"type": "thermal_snapshot", "id": req_id, "error": "sensor unavailable"})
+        return
+    px, ambient = res
+    send_serial({
+        "type": "thermal_snapshot",
+        "id": req_id,
+        "ambient": round(ambient, 1),
+        "pixels": [round(v, 1) for v in px],
+    })
+
+
+def handle_idle_tap():
+    """Idle tap opens the thermal view. With no sensor fitted, fall back to
+    the original tap-to-recolour (issue #13)."""
+    global state, _thermal_frame
+    if _amg_ok:
+        _thermal_frame = None   # don't flash a stale frame from last time
+        state = "thermal"
+    else:
+        handle_idle_touch()
+
+
+def handle_thermal_tap():
+    """Tapping the thermal view returns to idle, with a fresh idle colour."""
+    global state
+    state = "idle"
+    handle_idle_touch()
+
+
+def _build_thermal_pens():
+    pens = []
+    segs = len(_IRON) - 1
+    for i in range(64):
+        pos = i * segs / 63
+        k = int(pos)
+        if k >= segs:
+            k = segs - 1
+        f = pos - k
+        a, b = _IRON[k], _IRON[k + 1]
+        pens.append(display.create_pen(
+            int(a[0] + (b[0] - a[0]) * f),
+            int(a[1] + (b[1] - a[1]) * f),
+            int(a[2] + (b[2] - a[2]) * f),
+        ))
+    return pens
+
+
+def _build_thermal_axis():
+    idx, frac = [], []
+    for o in range(AMG_GRID):
+        pos = o * 7 / (AMG_GRID - 1)
+        i = int(pos)
+        if i > 6:
+            i = 6
+        idx.append(i)
+        frac.append(pos - i)
+    return idx, frac
+
+
+def draw_thermal(px, ambient):
+    global _thermal_pens, _thermal_axis
+    if _thermal_pens is None:
+        _thermal_pens = _build_thermal_pens()
+        _thermal_axis = _build_thermal_axis()
+    pens = _thermal_pens
+    ai, af = _thermal_axis
+
+    lo = min(px)
+    hi = max(px)
+    if hi - lo < AMG_MIN_SPAN_C:
+        hi = lo + AMG_MIN_SPAN_C
+    scale = 63.0 / (hi - lo)
+    cell = WIDTH // AMG_GRID
+
+    for oy in range(AMG_GRID):
+        r0 = ai[oy] * 8
+        r1 = r0 + 8
+        fy = af[oy]
+        y = oy * cell
+        for ox in range(AMG_GRID):
+            ix = ai[ox]
+            fx = af[ox]
+            top = px[r0 + ix] + (px[r0 + ix + 1] - px[r0 + ix]) * fx
+            bot = px[r1 + ix] + (px[r1 + ix + 1] - px[r1 + ix]) * fx
+            level = int((top + (bot - top) * fy - lo) * scale)
+            if level < 0:
+                level = 0
+            elif level > 63:
+                level = 63
+            display.set_pen(pens[level])
+            display.rectangle(ox * cell, y, cell, cell)
+
+    # Readouts on dark bars so they stay legible over any colour
+    centre = (px[27] + px[28] + px[35] + px[36]) / 4
+    display.set_pen(BLACK)
+    display.rectangle(0, 0, WIDTH, 30)
+    display.rectangle(0, HEIGHT - 30, WIDTH, 30)
+    display.set_pen(WHITE)
+    display.text("MIN %.1f  MAX %.1f" % (min(px), max(px)), 8, 7, WIDTH, 2)
+    display.text("CENTRE %.1fC  AMB %.1fC" % (centre, ambient), 8, HEIGHT - 23, WIDTH, 2)
+    cx, cy = WIDTH // 2, HEIGHT // 2
+    display.line(cx - 14, cy, cx + 14, cy)
+    display.line(cx, cy - 14, cx, cy + 14)
+
+
+def render_thermal():
+    global _thermal_frame, _thermal_ambient, _thermal_last_read
+    now = time.ticks_ms()
+    if _thermal_frame is not None and time.ticks_diff(now, _thermal_last_read) < AMG_FRAME_MS:
+        return  # no new sensor frame yet
+    _thermal_last_read = now
+    res = amg_read()
+    if res is not None:
+        _thermal_frame, _thermal_ambient = res
+    if _thermal_frame is None:
+        display.set_pen(BLACK)
+        display.clear()
+        display.set_pen(WHITE)
+        display.text("NO SENSOR DATA", 10, 10, WIDTH - 20, 3)
+        presto.update()
+        return
+    draw_thermal(_thermal_frame, _thermal_ambient)
+    set_all_leds(PALETTE["idle_leds"])
+    presto.update()
+
+
+amg_init()
+
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 def main():
     send_serial({"type": "hello"})
@@ -288,7 +478,9 @@ def main():
         # Edge-detect: only act on a fresh press, not a held finger.
         if touched and not _last_touched:
             if state == "idle":
-                handle_idle_touch()
+                handle_idle_tap()
+            elif state == "thermal":
+                handle_thermal_tap()
             elif state == "choice":
                 handle_choice_touch(tx, ty)
             # FYI messages have no touch response (non-blocking, issue #14).
@@ -302,6 +494,8 @@ def main():
             render_fyi()
         elif state == "choice":
             render_choice()
+        elif state == "thermal":
+            render_thermal()
 
         time.sleep(0.03)
 

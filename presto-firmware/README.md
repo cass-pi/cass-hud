@@ -17,8 +17,14 @@ Full JSON protocol (what this firmware reads from/writes to serial):
 - Renders exactly one of three states, whichever was most recently
   requested — **no on-device queue**, per issue #12's explicit scope:
   - `idle` — a retro-future ring-sweep animation (issue #13). Tapping
-    during idle shifts it to a random hue; purely decorative, not saved,
-    immediately overridden by any real incoming message.
+    during idle opens the thermal view (below). If no sensor is fitted the
+    tap recolours the animation instead, as originally specced. The colour
+    is purely decorative, not saved, and any real incoming message
+    overrides it.
+  - `thermal` — live AMG8833 heatmap. Tap to return to idle (which also picks
+    a fresh idle colour). Pi messages replace it like any other state. The
+    Pi can also request a one-off sensor reading in any state with a
+    `thermal_snapshot` message; see `../docs/presto-bridge-protocol.md`.
   - `fyi` — non-blocking message (issue #14). Sits on screen until
     replaced by the next message; no dismiss action.
   - `choice` — blocking message with buttons (issue #15). Short option
