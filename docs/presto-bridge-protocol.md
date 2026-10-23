@@ -110,7 +110,7 @@ Configuration (env vars, see `presto-bridge.service` + env file):
 |---|---|
 | `GATEWAY_URL` | Base URL of the Gateway, e.g. `http://localhost:18789` |
 | `HOOKS_TOKEN` | Bearer token for `/hooks/wake` (same token already configured under `hooks.token` in `openclaw.json`) |
-| `PRESTO_SERIAL_PORT` | Defaults to `/dev/ttyACM0` |
+| `PRESTO_SERIAL_PORT` | Optional. If unset, the bridge finds the board via `/dev/serial/by-id/usb-MicroPython*` on every connect attempt (falling back to `/dev/ttyACM0`), so a USB re-plug that renumbers `ttyACM*` doesn't break it |
 | `PRESTO_BAUD` | Defaults to `115200` |
 | `PRESTO_SOCKET_PATH` | Defaults to `/tmp/presto-bridge.sock` |
 

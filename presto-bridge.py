@@ -25,6 +25,7 @@ import os
 import sys
 import json
 import time
+import glob
 import socket
 import logging
 import threading
@@ -38,7 +39,10 @@ except ImportError:
 
 # ── Config (env-overridable, see presto-bridge.service) ─────────────────────
 SOCKET_PATH        = os.environ.get("PRESTO_SOCKET_PATH", "/tmp/presto-bridge.sock")
-SERIAL_PORT        = os.environ.get("PRESTO_SERIAL_PORT", "/dev/ttyACM0")
+# If PRESTO_SERIAL_PORT is unset the bridge looks the board up on every connect
+# attempt (see resolve_serial_port) so a USB re-plug that renumbers
+# /dev/ttyACM* can't leave it pointing at a dead path.
+SERIAL_PORT        = os.environ.get("PRESTO_SERIAL_PORT", "")
 SERIAL_BAUD        = int(os.environ.get("PRESTO_BAUD", "115200"))
 GATEWAY_URL        = os.environ.get("GATEWAY_URL", "http://localhost:18789")
 HOOKS_TOKEN        = os.environ.get("HOOKS_TOKEN", "")
@@ -79,6 +83,15 @@ def wake_gateway(text):
 
 
 # ── Serial: connection management ───────────────────────────────────────────
+def resolve_serial_port():
+    """Explicit PRESTO_SERIAL_PORT wins; otherwise find the board by its
+    stable /dev/serial/by-id name, falling back to /dev/ttyACM0."""
+    if SERIAL_PORT:
+        return SERIAL_PORT
+    matches = sorted(glob.glob("/dev/serial/by-id/usb-MicroPython*"))
+    return matches[0] if matches else "/dev/ttyACM0"
+
+
 def serial_connect_loop():
     """Keep exactly one serial connection open, reconnecting on failure.
 
@@ -90,14 +103,15 @@ def serial_connect_loop():
     global _ser
     while True:
         if serial is None:
-            log.error("pyserial not installed; cannot open %s", SERIAL_PORT)
+            log.error("pyserial not installed; cannot open serial port")
             time.sleep(SERIAL_RECONNECT_S)
             continue
         try:
-            conn = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.2)
+            port = resolve_serial_port()
+            conn = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
             with _serial_lock:
                 _ser = conn
-            log.info("serial connected: %s @ %d", SERIAL_PORT, SERIAL_BAUD)
+            log.info("serial connected: %s @ %d", port, SERIAL_BAUD)
             serial_read_loop(conn)
         except (OSError, serial.SerialException if serial else OSError) as e:
             log.warning("serial connect/read failed: %s (retrying in %.1fs)", e, SERIAL_RECONNECT_S)
