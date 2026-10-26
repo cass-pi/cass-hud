@@ -189,7 +189,13 @@ def handle_idle_touch():
 
 
 # ── Rendering: FYI ───────────────────────────────────────────────────────────
+FYI_BUTTON_H = 70
+FYI_BUTTON_W = 220
+_fyi_button = (0, 0, 0, 0)  # x, y, w, h of the Dismiss button on the FYI screen
+
+
 def render_fyi():
+    global _fyi_button
     bg = display.create_pen(*PALETTE["fyi_bg"])
     fg = display.create_pen(*PALETTE["fyi_text"])
 
@@ -197,10 +203,37 @@ def render_fyi():
     display.clear()
 
     display.set_pen(fg)
-    vector_text_block(fyi_text, WIDTH, HEIGHT, scale=3)
+    vector_text_block(fyi_text, WIDTH, HEIGHT - FYI_BUTTON_H - 20, scale=3)
+
+    # Dismiss button, bottom centre. Tapping it returns to thermal/idle locally.
+    bx = (WIDTH - FYI_BUTTON_W) // 2
+    by = HEIGHT - FYI_BUTTON_H - 10
+    _fyi_button = (bx, by, FYI_BUTTON_W, FYI_BUTTON_H)
+    display.set_pen(display.create_pen(60, 60, 60))
+    display.rectangle(bx, by, FYI_BUTTON_W, FYI_BUTTON_H)
+    display.set_pen(WHITE)
+    tw = display.measure_text("Dismiss", 2)
+    display.text("Dismiss", bx + (FYI_BUTTON_W - tw) // 2, by + (FYI_BUTTON_H - 16) // 2, FYI_BUTTON_W, 2)
 
     set_all_leds(PALETTE["fyi_led"])
     presto.update()
+
+
+def _reset_thermal_view():
+    """Clear the cached thermal frame so the view does not flash a stale one."""
+    global _thermal_frame
+    _thermal_frame = None
+
+
+def handle_fyi_touch(x, y):
+    """Dismiss the FYI locally: back to thermal if fitted, else idle."""
+    global state
+    bx, by, bw, bh = _fyi_button
+    if bx <= x <= bx + bw and by <= y <= by + bh:
+        state = "thermal" if _amg_ok else "idle"
+        if state == "thermal":
+            _reset_thermal_view()
+
 
 
 # ── Rendering: choice ────────────────────────────────────────────────────────
@@ -483,7 +516,8 @@ def main():
                 handle_thermal_tap()
             elif state == "choice":
                 handle_choice_touch(tx, ty)
-            # FYI messages have no touch response (non-blocking, issue #14).
+            elif state == "fyi":
+                handle_fyi_touch(tx, ty)
         _last_touched = touched
 
         tick = time.ticks_ms() / 300.0
