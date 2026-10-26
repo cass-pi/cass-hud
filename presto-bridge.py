@@ -248,6 +248,107 @@ def request_thermal_snapshot():
     return summarise_thermal(msg)
 
 
+# ── Desk presence (thermal frame vs a stored empty-desk baseline) ───────────
+# Calibrated against real empty/occupied frames: with the desk empty no pixel
+# sat 2C over the baseline; with someone sitting there ~20 did. Not yet tested
+# leaning back / off-centre, or over a long day, so treat the thresholds as
+# starting values.
+BASELINE_PATH       = os.environ.get(
+    "PRESTO_BASELINE_PATH",
+    os.path.expanduser("~/.openclaw/state/presto-thermal-baseline.json"))
+PRESENCE_RISE_C     = 2.0   # a pixel counts if it is this far above its baseline
+PRESENCE_MIN_PIXELS = 4     # ...and this many such pixels means "present"
+CALIBRATE_FRAMES    = 8
+CALIBRATE_GAP_S     = 0.5
+CALIBRATE_MAX_NOISE_C = 0.7  # refuse a baseline if any pixel wobbles more than this.
+                             # Truly empty desk measured 0.27-0.53C; a calibration taken
+                             # while someone walked into view measured 0.74C.
+
+
+def flatten_frame(summary):
+    return [v for row in summary["pixels"] for v in row]
+
+
+def average_frames(frames):
+    """Per-pixel mean of several 64-value frames, plus the worst per-pixel stdev."""
+    n = len(frames)
+    mean = [sum(f[i] for f in frames) / n for i in range(64)]
+    noise = max((sum((f[i] - mean[i]) ** 2 for f in frames) / n) ** 0.5 for i in range(64))
+    return mean, noise
+
+
+def compute_presence(px, baseline):
+    rises = [px[i] - baseline[i] for i in range(64)]
+    over = sum(1 for r in rises if r >= PRESENCE_RISE_C)
+    return {
+        "present": over >= PRESENCE_MIN_PIXELS,
+        "pixels_over": over,
+        "max_rise": round(max(rises), 1),
+        "rise_c": PRESENCE_RISE_C,
+        "min_pixels": PRESENCE_MIN_PIXELS,
+    }
+
+
+def load_baseline():
+    """Return (baseline dict, None) or (None, error message)."""
+    try:
+        with open(BASELINE_PATH) as f:
+            data = json.load(f)
+        if len(data["pixels"]) != 64:
+            return None, "baseline file is corrupt (expected 64 pixels)"
+        return data, None
+    except FileNotFoundError:
+        return None, "no baseline: run calibrate with the desk empty"
+    except (ValueError, KeyError, TypeError) as e:
+        return None, "baseline file unreadable: %s" % e
+
+
+def request_presence():
+    baseline, err = load_baseline()
+    if err:
+        return {"ok": False, "error": err}
+    snap = request_thermal_snapshot()
+    if not snap.get("ok"):
+        return snap
+    res = compute_presence(flatten_frame(snap), baseline["pixels"])
+    res["ok"] = True
+    res["baseline_age_s"] = int(time.time() - baseline.get("created", time.time()))
+    return res
+
+
+def calibrate_baseline(force=False):
+    """Average several frames of an EMPTY desk and store them as the baseline."""
+    if not force:
+        old, _ = load_baseline()
+        if old is not None:
+            cur = request_thermal_snapshot()
+            if cur.get("ok") and compute_presence(flatten_frame(cur), old["pixels"])["present"]:
+                return {"ok": False, "error": (
+                    "refusing to calibrate: the current frame already looks occupied against "
+                    "the existing baseline (someone at the desk, or the sensor moved?). "
+                    "Clear the desk, or pass force to override.")}
+    frames = []
+    for i in range(CALIBRATE_FRAMES):
+        snap = request_thermal_snapshot()
+        if not snap.get("ok"):
+            return {"ok": False, "error": "frame %d failed: %s" % (i + 1, snap.get("error"))}
+        frames.append(flatten_frame(snap))
+        time.sleep(CALIBRATE_GAP_S)
+    mean, noise = average_frames(frames)
+    if noise > CALIBRATE_MAX_NOISE_C:
+        return {"ok": False, "error": (
+            "frames too noisy (worst pixel stdev %.2fC > %.1fC): something is moving in view"
+            % (noise, CALIBRATE_MAX_NOISE_C))}
+    data = {"created": int(time.time()), "frames": len(frames),
+            "noise_c": round(noise, 2), "pixels": [round(v, 2) for v in mean]}
+    os.makedirs(os.path.dirname(BASELINE_PATH), exist_ok=True)
+    tmp = BASELINE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, BASELINE_PATH)  # atomic: never leave a half-written baseline
+    return {"ok": True, "frames": len(frames), "noise_c": data["noise_c"], "path": BASELINE_PATH}
+
+
 # ── Local socket: commands from Cass/the Gateway ────────────────────────────
 def handle_socket_client(conn):
     try:
@@ -305,6 +406,12 @@ def handle_socket_line(line):
 
     if c == "thermal":
         return json.dumps(request_thermal_snapshot())
+
+    if c == "presence":
+        return json.dumps(request_presence())
+
+    if c == "calibrate":
+        return json.dumps(calibrate_baseline(bool(cmd.get("force"))))
 
     if c == "ping":
         return '"pong"'

@@ -44,6 +44,7 @@ Newline-delimited JSON, one object per line, same shape as
   replaces this one" and for an external event resolving a blocking choice
   (e.g. a PR merge webhook) — the device doesn't know or care which case
   it is, same behaviour either way, per issue #15.
+- `presence` / `calibrate` — desk presence from the thermal sensor, and re-taking its empty-desk baseline. See "Desk presence" below.
 - `thermal` — read the AMG8833 sensor on the Presto right now. Unlike the other commands this one **waits for a reply** (up to 4s) and returns a summary of the frame, not just `{"ok":true}`. See "Thermal camera" below.
 - `ping` — health check, replies `"pong"`.
 
@@ -98,7 +99,18 @@ An AMG8833 8x8 infrared array on the Presto's Qw/ST port (I2C0, GPIO 40/41, addr
 - The bridge returns: `ambient` (the sensor's own thermistor), `min`/`max`/`mean`/`median`, `spread` (max minus median), `warm_pixels` (pixels more than 4C above the median), `hottest` (row/col/temp) and the full 8x8 `pixels` grid in degrees C.
 - Errors come back as `{"ok": false, "error": "..."}`: serial not connected, sensor unavailable, or no reply within 4s.
 
-**Presence detection is not a built-in boolean.** An 8x8 frame at an unknown distance needs calibrating: take a snapshot with the desk empty and one with someone sitting there, and compare `warm_pixels` and `spread`. Until that's done, read the grid rather than trusting a threshold.
+**`warm_pixels` and `spread` are not usable for presence** (they did not separate empty from occupied when measured). Use `presence` below, which compares against a stored baseline.
+
+### Desk presence
+
+Built on the thermal snapshot, comparing a live frame with a stored empty-desk baseline:
+
+- `presto-send calibrate` (socket: `{"cmd": "calibrate"}`) averages 8 snapshots, about half a second apart, and stores them as the baseline. **Run it with the desk empty.** It refuses if the frames are noisy (something moving in view) or if the current frame already looks occupied against the existing baseline; pass `--force` (`"force": true`) after moving the sensor. The baseline lives at `~/.openclaw/state/presto-thermal-baseline.json` (override with `PRESTO_BASELINE_PATH`), deliberately outside the repo since it depends on where the sensor sits. It is written atomically.
+- `presto-send presence` (socket: `{"cmd": "presence"}`) takes a fresh snapshot and returns `present`, `pixels_over`, `max_rise`, the thresholds used and `baseline_age_s`. **`present` is true when at least 4 pixels are at least 2 °C above their baseline value.** Errors (no baseline yet, serial not connected, sensor unavailable) come back as `{"ok": false, "error": "..."}`.
+
+**How the thresholds were chosen:** from real frames, sensor mounted away from electronics. With the desk empty no pixel was ever 2 °C over the baseline (biggest single-pixel rise 0.3 to 1.7 °C, including a check three days later). With someone sitting at the desk, 19 to 24 pixels were, with a biggest rise of 7.1 to 7.8 °C.
+
+**Not yet tested:** leaning back or sitting off-centre, other warm objects in view (a mug, a laptop), sun on the desk, and drift over a full day. Treat the thresholds as starting values and recalibrate if the sensor moves.
 
 ## Bridge → Gateway
 
