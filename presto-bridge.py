@@ -260,7 +260,9 @@ PRESENCE_RISE_C     = 2.0   # a pixel counts if it is this far above its baselin
 PRESENCE_MIN_PIXELS = 4     # ...and this many such pixels means "present"
 CALIBRATE_FRAMES    = 8
 CALIBRATE_GAP_S     = 0.5
-CALIBRATE_MAX_NOISE_C = 1.0  # refuse a baseline if any pixel wobbles more than this
+CALIBRATE_MAX_NOISE_C = 0.7  # refuse a baseline if any pixel wobbles more than this.
+                             # Truly empty desk measured 0.27-0.53C; a calibration taken
+                             # while someone walked into view measured 0.74C.
 
 
 def flatten_frame(summary):
