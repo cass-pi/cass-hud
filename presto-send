@@ -7,6 +7,8 @@ Usage:
   presto-send choice "Option A or B?" a:"Option A" b:"Option B"
   presto-send clear
   presto-send thermal [--json]
+  presto-send presence [--json]
+  presto-send calibrate [--force]   (run with the desk EMPTY)
   presto-send ping
 
 Protocol details: see docs/presto-bridge-protocol.md
@@ -45,6 +47,28 @@ def request(payload, timeout=10):
 
 def send(payload):
     print(request(payload))
+
+
+def presence(raw):
+    text = request({"cmd": "presence"})
+    if raw:
+        print(text)
+        return
+    d = json.loads(text)
+    if not d.get("ok"):
+        print(f"error: {d.get('error', 'unknown')}", file=sys.stderr)
+        sys.exit(1)
+    state = "PRESENT" if d["present"] else "not present"
+    print(f"{state}: {d['pixels_over']} pixels >= +{d['rise_c']}C over baseline "
+          f"(need {d['min_pixels']}), max rise {d['max_rise']}C, baseline {d['baseline_age_s'] // 60} min old")
+
+
+def calibrate(force):
+    d = json.loads(request({"cmd": "calibrate", "force": force}, timeout=40))
+    if not d.get("ok"):
+        print(f"error: {d.get('error', 'unknown')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"baseline saved: {d['frames']} frames, worst pixel noise {d['noise_c']}C -> {d['path']}")
 
 
 def thermal(raw):
@@ -109,6 +133,12 @@ def main():
 
     elif cmd == "thermal":
         thermal("--json" in args)
+
+    elif cmd == "presence":
+        presence("--json" in args)
+
+    elif cmd == "calibrate":
+        calibrate("--force" in args)
 
     elif cmd == "ping":
         send({"cmd": "ping"})
